@@ -1,124 +1,141 @@
 #!/usr/bin/env python
-# license removed for brevity
 
-import RPi.GPIO as GPIO
+from __future__ import division
+import serial
 import rospy
-import numpy as np
-from std_msgs.msg import String
+from std_msgs.msg import String  #String message type for publishing
 
-#Disables warnings and sets up BCM GPIO numbering
-GPIO.setwarnings(False)
-GPIO.setmode(GPIO.BCM)
+#Map function from arduino
+def map(x,in_min,in_max,out_min,out_max):
+	return (x-in_min)*(out_max-out_min)/(in_max-in_min)+out_min
 
-#Sets GPIO out pins
-GPIO.setup(24, GPIO.OUT)
-GPIO.setup(25, GPIO.OUT)
-GPIO.setup(4, GPIO.OUT)
-GPIO.setup(17, GPIO.OUT)
-GPIO.setup(22, GPIO.OUT)
-GPIO.setup(23, GPIO.OUT)
-GPIO.setup(18, GPIO.OUT)
-GPIO.setup(27, GPIO.OUT)
+#Initializes serial communication (if there is an error 'no suchfile or directory found' try changing '/dev/ttyACM0' to '/dev/ttyACM1')
+arduino = serial.Serial('/dev/ttyUSB0',9600)
 
-F = 490
+#Initial readings to prevent errors
+for i in range(50):
+	a = arduino.readline()
+	print a
 
-#Creates PWM instances (channel,frequency)
-pwm_A1 = GPIO.PWM(24,F)
-pwm_B1 = GPIO.PWM(25,F)
-pwm_A2 = GPIO.PWM(4,F)
-pwm_B2 = GPIO.PWM(17,F)
-pwm_A3 = GPIO.PWM(22,F)
-pwm_B3 = GPIO.PWM(23,F)
-pwm_A4 = GPIO.PWM(18,F)
-pwm_B4 = GPIO.PWM(27,F)
+#Initial flag values
+FlagXP = 0
+FlagXS = 1
+FlagXN = 0
+FlagYP = 0
+FlagYS = 1
+FlagYN = 0
 
-#Initial PWM, for DC motors it is always 0
-pwm_A1.start(0)
-pwm_B1.start(0)
-pwm_A2.start(0)
-pwm_B2.start(0)
-pwm_A3.start(0)
-pwm_B3.start(0)
-pwm_A4.start(0)
-pwm_B4.start(0)
+#Sets maximum PWM values for X,Y, and turns velocities
+VX_MAX = 30
+VY_MAX = 30
+VFG_MAX = 50
+VBG_MAX = 50
 
-def callback(data):
+#Tells rospy the name of the node
+rospy.init_node('joystickm', anonymous = True)
+#Declares that this node is publishing to the 'joystick_topic' topic using the message type String
+pub2 = rospy.Publisher('batinito_topic',String, queue_size = 10)
 
-    try:
-		v = data.data
-		cmd = v.split("/")
-		F1 = int(cmd[0])
-		Vy = int(cmd[1])
-		F2 = int(cmd[2])
-		Vx = int(cmd[3])
+#Variable for Robot velocities
+M2 = "mbatinito"
 
-		if (Vx > 0 and Vy == 0):
-			if (F2 == 1):
-				C = [Vx,0,Vx,0,Vx,0,Vx,0]
-			elif (F2 == 0):
-				C = [0,Vx,0,Vx,0,Vx,0,Vx]
+try:
+	while not rospy.is_shutdown():
+		#Gets the data that is being sent from the arduino
+		joystick=arduino.readline()
+		l = joystick.split("/") #Splits the data in X and Y readings
 
-		elif (Vx == 0 and Vy > 0):
-			if (F1 == 0):
-				C = [0,Vy,Vy,0,Vy,0,0,Vy]
-			elif (F1 == 1):
-				C = [Vy,0,0,Vy,0,Vy,Vy,0]
+		#Assigns the data to variables 
+		DX = int(l[0])
+		DY = int(l[1])
+		Pl = int(l[2])
+		Pr = int(l[3])
 
-		elif (Vx > 0 and Vy > 0):
+		#Maps the values to PWM
+		Velxfront = int(round(map(DX,517,1023,0,VX_MAX),0))
+		Velxback = int(round(map(DX,516,0,0,VX_MAX),0))
+		Velyright = int(round(map(DY,518,1023,0,VY_MAX),0))
+		Velyleft  = int(round(map(DY,517,0,0,VY_MAX),0))
 
-			if (Vx > Vy):
-				if (F1 == 0 and F2 == 0):
-					C = [0,Vx,Vy,0,Vy,0,0,Vx]
-				elif (F1 == 0 and F2 == 1):
-					C = [0,Vy,Vx,0,Vx,0,0,Vy]
-				elif (F1 == 1 and F2 == 0):
-					C = [Vy,0,0,Vx,0,Vx,Vy,0]
-				elif (F1 == 1 and F2 == 1):
-					C = [Vx,0,0,Vy,0,Vy,Vx,0]
+		Velxfrontright = int(round(map(DY,517,1023,Velxfront,VFG_MAX),0))
+		Velxfrontleft = int(round(map(DY,517,0,Velxfront,VFG_MAX),0))
+		Velxbackright = int(round(map(DY,517,1023,Velxback,VBG_MAX),0))
+		Velxbackleft = int(round(map(DY,517,0,Velxback,VBG_MAX),0))
 
-			elif (Vy > Vx):
-				if (F1 == 0 and F2 == 0):
-					C = [0,Vy,Vx,0,Vx,0,0,Vy]
-				elif (F1 == 0 and F2 == 1):
-					C = [0,Vx,Vy,0,Vy,0,0,Vx]
-				elif (F1 == 1 and F2 == 0):
-					C = [Vx,0,0,Vy,0,Vy,Vx,0]
-				elif (F1 == 1 and F2 == 1):
-					C = [Vy,0,0,Vx,0,Vx,Vy,0]
+		#Conditions for flag values
+		if (DX>=518):
+			FlagXP = 1
+			FlagXS = 0
+			FlagXN = 0
 
-			elif (Vx == Vy):
-				if (F1 == 0 and F2 == 0):
-					C = [0,Vy,Vx,0,Vx,0,0,Vy]
-				elif (F1 == 0 and F2 == 1):
-					C = [0,Vx,Vy,0,Vy,0,0,Vx]
-				elif (F1 == 1 and F2 == 0):
-					C = [Vx,0,0,Vy,0,Vy,Vx,0]
-				elif (F1 == 1 and F2 == 1):
-					C = [Vy,0,0,Vx,0,Vx,Vy,0]
+		if (DX>=515 and DX<518):
+			FlagXS = 1
+			FlagXP = 0
+			FlagXN = 0
 
-		elif (Vy == 0 and Vx == 0):
-			C = [0,0,0,0,0,0,0,0]
+		if (DX<515):
+			FlagXN = 1
+			FlagXS = 0
+			FlagXP = 0
 
-		#print C
+		if (DY>518):
+			FlagYP = 1
+			FlagYS = 0
+			FlagYN = 0
 
-		pwm_A1.ChangeDutyCycle(C[0])
-		pwm_B1.ChangeDutyCycle(C[1])
-		pwm_A2.ChangeDutyCycle(C[2])
-		pwm_B2.ChangeDutyCycle(C[3])
-		pwm_A3.ChangeDutyCycle(C[4])
-		pwm_B3.ChangeDutyCycle(C[5])
-		pwm_A4.ChangeDutyCycle(C[6])
-		pwm_B4.ChangeDutyCycle(C[7])
+		if (DY>516 and DY<=518):
+			FlagYS = 1
+			FlagYP = 0
+			FlagYN = 0
 
-    except:
-        pass
+		if (DY<=516):
+			FlagYN = 1
+			FlagYS = 0
+			FlagYP = 0
 
+		#Conditions for robot movement that change the value of M
+		if (FlagXS == True and FlagYS == True):
+			M2 = str(1)+"/"+str(0)+"/"+str(1)+"/"+str(0)+"/"+str(Pl)+"/"+str(Pr)
 
-def inicio():
-	rospy.init_node('principal', anonymous=True)
-	rospy.Subscriber("batinito_topic", String, callback)
-	rospy.spin()
-	print "INICIO"
+		elif (FlagYP == True and FlagXS == True):
+			M2 = str(1)+"/"+str(Velyright)+"/"+str(1)+"/"+str(0)+"/"+str(Pl)+"/"+str(Pr)
 
-if __name__ == '__main__':
-	inicio()
+		elif (FlagYN == True and FlagXS == True):
+			M2 = str(0)+"/"+str(Velyleft)+"/"+str(1)+"/"+str(0)+"/"+str(Pl)+"/"+str(Pr)
+
+		elif (FlagXP == True and FlagYS == True):
+			M2 = str(1)+"/"+str(0)+"/"+str(1)+"/"+str(Velxfront)+"/"+str(Pl)+"/"+str(Pr)
+
+		elif (FlagXN == True and FlagYS == True):
+			M2 = str(1)+"/"+str(0)+"/"+str(0)+"/"+str(Velxback)+"/"+str(Pl)+"/"+str(Pr)
+
+		elif (FlagXP == True and FlagYS == False):
+
+			if(FlagYP == True):
+				DerB = Velxfrontright
+				IzqB = Velxfront
+				M2 = str(1)+"/"+str(Velyright)+"/"+str(1)+"/"+str(Velxfront)+"/"+str(Pl)+"/"+str(Pr)
+
+			elif(FlagYN == True):
+				DerB = Velxfront
+				IzqB = Velxfrontleft
+				M2 = str(0)+"/"+str(Velyleft)+"/"+str(1)+"/"+str(Velxfront)+"/"+str(Pl)+"/"+str(Pr)
+			
+		elif (FlagXN == True and FlagYS == False):
+
+			if (FlagYP == 1):
+				DerA = Velxbackright
+				IzqA = Velxback
+				M2 = str(1)+"/"+str(Velyright)+"/"+str(0)+"/"+str(Velxback)+"/"+str(Pl)+"/"+str(Pr)
+
+			elif (FlagYN == 1):
+				DerA = Velxback
+				IzqA = Velxbackleft
+				M2 = str(0)+"/"+str(Velyleft)+"/"+str(0)+"/"+str(Velxback)+"/"+str(Pl)+"/"+str(Pr)
+
+		#Publishes the string M to the 'joystick_topic' topic
+		print M2        
+		pub2.publish(M2)      
+
+except rospy.ROSInterruptException:
+    pass
